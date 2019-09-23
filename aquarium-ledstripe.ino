@@ -1,145 +1,210 @@
-#include <FastLED.h>
+//#include <Adafruit_NeoPixel.h>
+#include <NeoPixelBrightnessBus.h>
 
-#define LED_PIN     6
-#define NUM_LEDS    12
-#define BRIGHTNESS  100
-#define LED_TYPE    WS2812
-#define COLOR_ORDER GRB
-CRGB leds[NUM_LEDS];
+#define PIN 11
+#define PIXELCOUNT 12
+#define DEBUG 0
 
-#define UPDATES_PER_SECOND 100
+NeoPixelBrightnessBus<NeoGrbFeature, Neo800KbpsMethod> strip(PIXELCOUNT, PIN);
 
+#define colorSaturation 255
+const RgbColor red(colorSaturation, 0, 0);
+const RgbColor green(0, colorSaturation, 0);
+const RgbColor blue(0, 0, colorSaturation);
+const RgbColor yellow(colorSaturation, colorSaturation, 0);
+const RgbColor white(200, 200, 200);
+RgbColor darkYellow;
+RgbColor warmWhite;
 
-// USING palettes is MUCH simpler in practice than in theory, so first just
-// run this sketch, and watch the pretty lights as you then read through
-// the code.  Although this sketch has eight (or more) different color schemes,
-// the entire sketch compiles down to about 6.5K on AVR.
-//
-// FastLED provides a few pre-configured color palettes, and makes it
-// extremely easy to make up your own color schemes with palettes.
+const uint8_t c_MinBrightness = 0;
+const uint8_t c_MaxBrightness = 255;
 
+uint8_t brightness;
+int8_t direction; // current direction of dimming
 
-CRGBPalette16 currentPalette;
-TBlendType    currentBlending;
+uint8_t currentBlendStep = 0;
+float maxBlendSteps = 255.0f;
+bool stepResetMorning = false;
+bool stepResetAfternoon = false;
 
-extern CRGBPalette16 myRedWhiteBluePalette;
-extern const TProgmemPalette16 myRedWhiteBluePalette_p PROGMEM;
+uint32_t timer;
+const uint16_t tick = 1000; // 100 = 0.1 sec
+const uint16_t freq = 100000 / tick; // 100 000 / tick
+const uint32_t sunriseLength = freq * 36; // 1 hour sunrise with 1000ms ticks
+const uint32_t daylightLength = freq * 432; // 12 hours with 1000ms ticks
+const uint32_t sunsetLength = freq * 25; // 1 hour sunrise with 1000ms ticks
+const uint32_t dayMax = freq * 864; // 24 hours with 1000ms ticks
 
-const int buttonPin = 10;
-int buttonState = LOW;
 
 void setup() {
-    delay(3000); // power-up safety delay
-    FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection( TypicalLEDStrip );
-    FastLED.setBrightness(BRIGHTNESS);
-    
-//    currentPalette = CloudColors_p;
-    SetupSunsetSunrise();
-    currentBlending = LINEARBLEND;
-//    currentBlending = NOBLEND;
+    delay(3000); // just in case
+  
+  if (DEBUG) {
+    Serial.begin(115200);
+    while (!Serial); // wait for serial attach
 
-    pinMode(buttonPin, INPUT);
+    Serial.println();
+    Serial.println("Initializing...");
+    Serial.print("Sunrise end: ");
+    Serial.println(sunriseLength);
+    Serial.flush();
+  }
+  darkYellow = RgbColor::LinearBlend(red, yellow, 0.5f);
+  warmWhite = RgbColor::LinearBlend(darkYellow, white, 0.3f);
+
+  // this resets all the neopixels to an off state
+  strip.Begin();
+  strip.Show();
+
+  delay(500);
+  direction = 1; // -1 to dim first
+
+  initColours();
+  strip.SetBrightness(c_MinBrightness);
+  strip.Show();
+
+  timer = 0;
 }
 
-void loop()
-{
-//    ChangePalettePeriodically();
-    
-    static uint8_t startIndex = 0;
-    startIndex = startIndex + 3; /* motion speed */
+void loop() {
+  timer++;
+  brightness = strip.GetBrightness();
 
-    FillLEDsFromPaletteColors( startIndex);
-    
-    FastLED.show();
-    FastLED.delay(1000 / UPDATES_PER_SECOND);
+  if (DEBUG) {
+    Serial.print("brightness: ");
+    Serial.print(brightness);
+    Serial.print(", timer: ");
+    Serial.println(timer);
+  }
 
-    buttonState = digitalRead(buttonPin);
-    delay(50);
+  if (isMorning()) {
+    sunrise();
+  } else if (isAfternoon()) {
+    sunshine();
+  } else if (isEvening()) {
+    sunset();
+  } else if (isNight()) {
+    dark();
+  } else {
+    // reset day
+    timer = 0;
+  }
+
+  // show the results
+  strip.Show();
+  delay(tick);
 }
 
-void FillLEDsFromPaletteColors( uint8_t colorIndex)
-{
-    uint8_t brightness = 255;
-    
-    for( int i = 0; i < NUM_LEDS; i++) {
-        leds[i] = ColorFromPalette( currentPalette, colorIndex, brightness, currentBlending);
-        colorIndex += 3;
+void initColours() {
+  for (uint8_t i = 0; i < PIXELCOUNT; i++) {
+    if (i % 3 == 0) {
+      strip.SetPixelColor(i, red);
     }
-}
-
-
-// There are several different palettes of colors demonstrated here.
-//
-// FastLED provides several 'preset' palettes: RainbowColors_p, RainbowStripeColors_p,
-// OceanColors_p, CloudColors_p, LavaColors_p, ForestColors_p, and PartyColors_p.
-
-void ChangePalettePeriodically()
-{
-    uint8_t secondHand = (millis() / 1000) % 60;
-    static uint8_t lastSecond = 99;
-    
-    if( lastSecond != secondHand) {
-        lastSecond = secondHand;
-        if( secondHand ==  0)  { currentPalette = RainbowColors_p;         currentBlending = LINEARBLEND; }
-        if( secondHand == 10)  { currentPalette = RainbowStripeColors_p;   currentBlending = NOBLEND;  }
-        if( secondHand == 15)  { currentPalette = RainbowStripeColors_p;   currentBlending = LINEARBLEND; }
-//        if( secondHand == 20)  { SetupPurpleAndGreenPalette();             currentBlending = LINEARBLEND; }
-//        if( secondHand == 25)  { SetupTotallyRandomPalette();              currentBlending = LINEARBLEND; }
-//        if( secondHand == 30)  { SetupBlackAndWhiteStripedPalette();       currentBlending = NOBLEND; }
-//        if( secondHand == 35)  { SetupBlackAndWhiteStripedPalette();       currentBlending = LINEARBLEND; }
-//        if( secondHand == 40)  { currentPalette = CloudColors_p;           currentBlending = LINEARBLEND; }
-//        if( secondHand == 45)  { currentPalette = PartyColors_p;           currentBlending = LINEARBLEND; }
-//        if( secondHand == 50)  { currentPalette = myRedWhiteBluePalette_p; currentBlending = NOBLEND;  }
-//        if( secondHand == 55)  { currentPalette = myRedWhiteBluePalette_p; currentBlending = LINEARBLEND; }
+    if (i % 3 == 1) {
+      strip.SetPixelColor(i, red);
     }
+    if (i % 3 == 2) {
+      strip.SetPixelColor(i, red);
+    }
+  }
 }
 
-void SetupSunsetSunrise()
-{
- 
-    currentPalette = CRGBPalette16(
-                                   CRGB::Black,
-                                   CRGB::DarkRed,
-                                   CRGB::Red,
-                                   CRGB::OrangeRed,
-                                   CRGB::Orange,
-                                   CRGB::Yellow,
-                                   CRGB::Wheat,
-                                   CRGB::White,
-                                   CRGB::White,
-                                   CRGB::Wheat,
-                                   CRGB::Yellow,
-                                   CRGB::Orange,
-                                   CRGB::OrangeRed,
-                                   CRGB::Red,
-                                   CRGB::DarkRed,
-                                   CRGB::Black
-     );
+bool isMorning() {
+  return timer < sunriseLength;
 }
 
-// This example shows how to set up a static color palette
-// which is stored in PROGMEM (flash), which is almost always more
-// plentiful than RAM.  A static PROGMEM palette like this
-// takes up 64 bytes of flash.
-const TProgmemPalette16 myRedWhiteBluePalette_p PROGMEM =
-{
-    CRGB::Red,
-    CRGB::Gray, // 'white' is too bright compared to red and blue
-    CRGB::Blue,
-    CRGB::Black,
-    
-    CRGB::Red,
-    CRGB::Gray,
-    CRGB::Blue,
-    CRGB::Black,
-    
-    CRGB::Red,
-    CRGB::Red,
-    CRGB::Gray,
-    CRGB::Gray,
-    CRGB::Blue,
-    CRGB::Blue,
-    CRGB::Black,
-    CRGB::Black
-};
+bool isAfternoon() {
+  return timer >= sunriseLength && timer < daylightLength;
+}
 
+bool isEvening() {
+  return timer >= daylightLength && timer < daylightLength + sunsetLength;
+}
+
+bool isNight() {
+  return timer >= daylightLength + sunsetLength && timer < dayMax;
+}
+
+void sunrise() {
+  if (!stepResetMorning) {
+    stepResetMorning = true;
+    currentBlendStep = 0;
+  }
+  // swap diection of dim when limits are reached
+  if (direction < 0 && brightness <= c_MinBrightness)
+  {
+    direction = 1;
+  }
+
+  if (brightness < c_MaxBrightness) {
+    brightness += direction;
+    strip.SetBrightness(brightness);
+    if (brightness == 1) {
+      // workaround for 0 birghtness that erases colors
+      initColours();
+    }
+  }
+  for (uint8_t i = 0; i < PIXELCOUNT; i++) {
+    if (i % 3 == 0) {
+      strip.SetPixelColor(i, blendColors(red, darkYellow));
+    }
+    if (i % 3 == 2) {
+      strip.SetPixelColor(i, blendColors(red, darkYellow));
+    }
+  }
+  if (currentBlendStep < maxBlendSteps) {
+    currentBlendStep++;
+  }
+}
+
+void sunshine() {
+  if (!stepResetAfternoon) {
+    stepResetAfternoon = true;
+    currentBlendStep = 0;
+    maxBlendSteps = 255.0f;
+  }
+  for (uint8_t i = 0; i < PIXELCOUNT; i++) {
+    if (i % 3 == 0) {
+      strip.SetPixelColor(i, blendColors(darkYellow, white));
+
+    }
+    if (i % 3 == 1) {
+      strip.SetPixelColor(i, blendColors(red, darkYellow));
+
+    }
+    if (i % 3 == 2) {
+      strip.SetPixelColor(i, blendColors(darkYellow, warmWhite));
+    }
+  }
+
+  if (currentBlendStep < maxBlendSteps) {
+    currentBlendStep++;
+  }
+}
+
+void sunset() {
+  if (direction > 0 && brightness >= c_MaxBrightness)
+  {
+    direction = -1;
+  }
+
+  if (brightness > c_MinBrightness) {
+    brightness += direction;
+    strip.SetBrightness(brightness);
+  }
+}
+
+void dark() {
+  strip.SetBrightness(c_MinBrightness);
+}
+
+RgbColor blendColors(RgbColor from, RgbColor to) {
+  if (currentBlendStep >= maxBlendSteps) {
+    return to;
+  }
+  if (DEBUG) {
+    Serial.println(currentBlendStep / maxBlendSteps);
+  }
+
+  return RgbColor::LinearBlend(from, to, (currentBlendStep / maxBlendSteps));
+}
